@@ -1,6 +1,6 @@
-from locale import Error
-from signal import signal
+import datetime
 import requests
+import logging
 from bs4 import BeautifulSoup
 import os
 import re
@@ -8,20 +8,22 @@ from multiprocessing import Process, Queue, cpu_count
 import signal
 import shutil
 
+# TODO: 用logging管理输出，同时输出至日志文件和标准输出
+# TODO: 加入sanity check DONE
+# TODO: 修复printer无法正确退出的bug DONE
 
 if os.name == 'nt':
     illegal_chars = r"[<>?/\\|:*\"]"
     root_path = 'C:\\Users\\15120\\Desktop\\crawler\\test'
-    error_path = 'C:\\Users\\15120\\Desktop\\crawler\\log\\strange.txt'
+    log_path = 'C:\\Users\\15120\\Desktop\\crawler\\log'
 elif os.name == 'posix':
     illegal_chars = r"[/]"
-    root_path = '/home/data/zhangzhenhao-21/guoxuemi/gjzx'
-    error_path = '/home/data/zhangzhenhao-21/guoxuemi/log/strange.txt'
+    root_path = '/home/data/zhangzhenhao-21/crawlers/guoxuemi/gjzx'
+    log_path = '/home/data/zhangzhenhao-21/crawlers/log'
 else:
     raise ValueError("Unknown OS {}".format(os.name))
 
 root_url = 'http://www.guoxuemi.com'
-all_children = []
 DONE_MSG = 'DONE'
 DONE_FILENAME = 'DONE.sym'
 
@@ -29,20 +31,22 @@ DONE_FILENAME = 'DONE.sym'
 def clear_files():
     for book in os.listdir(root_path):
         book = os.path.join(root_path, book)
-        chapters=  os.listdir(book)
+        chapters = os.listdir(book)
         for chapter in chapters:
             chapter = os.path.join(book, chapter)
             if not os.path.isdir(chapter):
                 continue
             content = os.listdir(chapter)
-            if len(content)==1 and content[0] == 'DONE.sym':
+            if len(content) == 0 or content == ['DONE.sym']:
                 print("Removing fake finished {}".format(chapter))
                 shutil.rmtree(chapter)
-        if len(os.listdir(book)) == 0:
+        valid_chs = os.listdir(book)
+        if len(valid_chs) == 0 or valid_chs == ['intro.txt']:
             print("Removing empty book {}".format(book))
             shutil.rmtree(book)
 
-class MPManager():
+
+class MPManager:
     def __init__(self, n_workers=cpu_count()):
         qin, qout = Queue(), Queue()
         worker_procs = []
@@ -50,10 +54,10 @@ class MPManager():
             p = Process(target=worker, args=(qin, qout))
             p.start()
             worker_procs.append(p)
-        printer_proc = Process(target=printer, args=(qout,))
+        printer_proc = Process(target=printer, args=(qin, qout))
         printer_proc.start()
 
-        self.n_workers= n_workers
+        self.n_workers = n_workers
         self.worker_procs = worker_procs
         self.printer_proc = printer_proc
         self.qin, self.qout = qin, qout
@@ -61,7 +65,10 @@ class MPManager():
         def clear(sig, frame):
             all_procs = self.worker_procs + [printer_proc]
             for p in all_procs:
-                os.kill(p.pid, signal.SIGINT)
+                try:
+                    os.kill(p.pid, signal.SIGINT)
+                except:
+                    pass
             for p in all_procs:
                 p.join()
             print("Done cleaning up procs.")
@@ -152,15 +159,15 @@ def get_intro_chapter_links(url):
 
 def get_and_save_chapter_images(chapter_url,  path, max_retry=5):
     soup = url2soup(chapter_url)
-    code = soup.find('section',class_='xgwz2').find_all('script')[-1].text
+    code = soup.find('section', class_='xgwz2').find_all('script')[-1].text
 
     prefix_re = r"var ml='([a-z0-9:/\.]*)';"
     filenames_re = r"imglist\[\d+\]='(\d+\.\w+)';"
     prefix = re.search(prefix_re, code).group(1)
-    file_lt= re.findall(filenames_re, code)
+    file_lt = re.findall(filenames_re, code)
 
     if len(file_lt) == 0:
-        with open(os.path.join(error_path), "a+") as fp:
+        with open(os.path.join(log_path, "strange.txt"), "a+") as fp:
             fp.write(chapter_url+'\n')
         return "all"
     else:
@@ -188,11 +195,12 @@ def get_and_save_chapter_images(chapter_url,  path, max_retry=5):
         return bad_count
 
 
-def int_hlder(sig, frame):
+def int_handler(sig, frame):
     os._exit(-1)
 
+
 def worker(qin, qout):
-    signal.signal(signal.SIGINT, int_hlder)
+    signal.signal(signal.SIGINT, int_handler)
     pid = os.getpid()
     while True:
         inst = qin.get()
@@ -201,28 +209,36 @@ def worker(qin, qout):
             if bad_count != 0:
                 qout.put("Process {} failed to get {} pics of {}".format(pid, bad_count, inst[-1]))
             else:
-                qout.put("Process {} finished {}.".format(pid, inst[-1]))
+                qout.put("Process {} finished {}, {} jobs remain, at {}".format(
+                    pid, inst[-1], qin.qsize(), datetime.datetime.now()))
         elif inst == DONE_MSG:
-            os._exit(-1)
+            qout.put("Process {} is exiting.".format(pid))
+            qout.close()
+            qout.join_thread()
+            break
         else:
+            qout.put("Process {} died from wired instruction.".format(pid))
+            qout.close()
+            qout.join_thread()
             raise ValueError("Unknown instruction.")
 
 
-def printer(q):
-    signal.signal(signal.SIGINT, int_hlder)
+def printer(qin, qout):
+    log_file = os.path.join(log_path, str(datetime.datetime.now())+"_gjzx.log")
+    logging.basicConfig(filename=log_file, filemode='w', level=logging.INFO)
+    signal.signal(signal.SIGINT, int_handler)
     while True:
-        inst = q.get()
-        print(inst)
+        inst = qout.get()
+        logging.info(inst)
         if inst == DONE_MSG:
-            os._exit(-1)
+            break
 
 
 def main(n_repeat, n_workers):
     manager = MPManager(n_workers=n_workers)
     
     for _ in range(n_repeat):
-        # book_links = get_book_links(root_url + '/gjzx')
-        book_links = [('Anyname', '/gjzx/999382rwtn/')]
+        book_links = get_book_links(root_url + '/gjzx')
         for book_name, book_link in book_links:
             intro_text, chapter_links = get_intro_chapter_links(root_url + book_link)
             intro_text = intro_text.strip()
@@ -252,4 +268,4 @@ def main(n_repeat, n_workers):
 
 
 if __name__ == '__main__':
-    main(n_repeat=1, n_workers=2)
+    main(n_repeat=1, n_workers=3)

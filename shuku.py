@@ -10,7 +10,7 @@ if os.name == 'nt':
     root_path = 'C:\\Users\\15120\\Desktop\\crawler\\shuku'
 elif os.name == 'posix':
     illegal_chars = r"[/]"
-    root_path = '/home/data/zhangzhenhao-21/guoxuemi/shuku'
+    root_path = '/home/data/zhangzhenhao-21/crawlers/guoxuemi/shuku'
 else:
     raise ValueError("Unknown OS {}".format(os.name))
 

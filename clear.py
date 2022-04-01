@@ -10,12 +10,13 @@ def clear(root_dir):
             if not os.path.isdir(chapter):
                 continue
             content = os.listdir(chapter)
-            if len(content)==1 and content[0] == 'DONE.sym':
+            if len(content)==0 or (len(content)==1 and content[0] == 'DONE.sym'):
                 print("Removing fake finished {}".format(chapter))
                 shutil.rmtree(chapter)
-        if len(os.listdir(book)) == 0:
+                valid_chs = os.listdir(book)
+        if len(valid_chs) == 0 or valid_chs==['intro.txt']:
             print("Removing empty book {}".format(book))
             shutil.rmtree(book)
 
 
-clear('/home/data/zhangzhenhao-21/guoxuemi/gjzx')
+clear('/home/data/zhangzhenhao-21/crawler/guoxuemi/gjzx')
